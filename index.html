@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoatScope — Equity Research Terminal</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: '#0a0e17',
+            panel: '#121826',
+            panel2: '#0f1420',
+            edge: '#1f2937',
+            accent: '#38bdf8',
+            gold: '#f5b942',
+          },
+          fontFamily: {
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { background: #0a0e17; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #0a0e17; }
+    ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #374151; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.9s linear infinite; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-up { animation: fadeUp 0.5s ease both; }
+    @keyframes pulseDot { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+    .pulse-dot { animation: pulseDot 1.4s ease-in-out infinite; }
+    .grad-text { background: linear-gradient(90deg, #38bdf8, #f5b942); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  </style>
+</head>
+<body class="text-slate-200 font-sans antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    /* ============================ DATA ============================ */
+    const COMPANIES = [
+      { group: 'Technology', items: ['Apple', 'Microsoft', 'Nvidia', 'Alphabet (Google)', 'Meta Platforms', 'Amazon', 'Salesforce', 'ASML', 'SAP'] },
+      { group: 'Finance', items: ['JPMorgan Chase', 'Visa', 'Mastercard', 'BNP Paribas', 'AXA'] },
+      { group: 'Industrials', items: ['Airbus', 'Schneider Electric', 'Safran', 'Vinci', 'Saint-Gobain'] },
+      { group: 'Consumer', items: ['LVMH', "L'Oréal", 'Hermès', 'Kering', 'Danone'] },
+      { group: 'Healthcare', items: ['Novo Nordisk', 'AstraZeneca', 'Sanofi', 'Danaher'] },
+      { group: 'Energy', items: ['TotalEnergies', 'Engie'] },
+      { group: 'Other', items: ['Tesla', 'Ferrari', 'Richemont'] },
+    ];
+
+    const STATUS_MESSAGES = [
+      'Searching financial databases…',
+      'Reading the latest annual & quarterly filings…',
+      'Mapping revenue streams and cost structure…',
+      'Analyzing competitive moat…',
+      'Running Porter\'s Five Forces…',
+      'Reviewing management & governance…',
+      'Aggregating 5 years of financial history…',
+      'Polling analyst consensus estimates…',
+      'Building forward projections…',
+      'Assembling the trading comps universe…',
+      'Computing peer multiples & implied value…',
+      'Stress-testing the bull vs. bear thesis…',
+      'Finalizing the investment verdict…',
+    ];
+
+    /* ============================ CLAUDE PROMPT ============================ */
+    const SYSTEM_PROMPT = `You are MoatScope, a senior buy-side equity research analyst with 20+ years of experience in fundamental analysis, competitive strategy (Porter, Buffett-style moats), financial statement analysis, and relative valuation. You produce institutional-grade, intellectually honest research.
+
+You MUST use the web_search tool aggressively BEFORE writing your analysis. Search for: the company's most recent annual report / 10-K / universal registration document, the latest quarterly results, investor presentations, analyst consensus estimates, current share price and market cap, peer company multiples, management/CEO information, and ESG ratings. Cross-check figures from multiple sources. Use the most recent fiscal data available.
+
+CRITICAL OUTPUT RULES:
+- After researching, respond with EXACTLY ONE valid JSON object and nothing else — no markdown, no code fences, no commentary before or after.
+- Use the real local reporting currency (e.g. EUR for LVMH, USD for Apple, DKK for Novo Nordisk).
+- All financial figures must be real numbers you found via search, formatted as readable strings (e.g. "394.3B", "23.5%", "6.13"). Never invent precise figures you did not find — if a value is genuinely unavailable, use "n/a".
+- Be objective and balanced. The bear case must be as rigorous as the bull case.
+- Conform EXACTLY to the requested JSON schema. Every field is required.`;
+
+    function buildUserPrompt(company) {
+      return `Produce a complete equity research report on: ${company}.
+
+Use web_search to gather real, current data, then return ONE JSON object with this EXACT schema:
+
+{
+  "company": "full legal name",
+  "ticker": "primary exchange ticker",
+  "currency": "reporting currency code",
+  "currentPrice": "current share price with currency",
+  "marketCap": "current market cap (e.g. 2.9T USD)",
+  "asOf": "data as-of date you observed",
+  "section1": {
+    "businessModel": "2-3 paragraph prose on what they sell and how they make money",
+    "revenueStreams": "prose on the main revenue streams with rough % mix",
+    "costStructure": "prose on cost structure and margin dynamics",
+    "moatTypes": ["one or more of: Network Effects, Switching Costs, Cost Advantage, Intangible Assets, Efficient Scale"],
+    "moatStrength": "Wide | Narrow | None",
+    "moatJustification": "1 paragraph justifying the moat rating",
+    "valueDrivers": "prose on key value drivers and competitive differentiators"
+  },
+  "section2": {
+    "industry": "industry definition",
+    "tam": "TAM size with currency",
+    "growthRate": "industry growth rate %",
+    "fiveForces": {
+      "threatOfEntry": { "rating": "Low | Medium | High", "note": "one sentence" },
+      "supplierPower": { "rating": "Low | Medium | High", "note": "one sentence" },
+      "buyerPower": { "rating": "Low | Medium | High", "note": "one sentence" },
+      "substitutes": { "rating": "Low | Medium | High", "note": "one sentence" },
+      "rivalry": { "rating": "Low | Medium | High", "note": "one sentence" }
+    },
+    "marketShare": "prose on market share vs top 3-5 named competitors",
+    "trends": "prose on key industry trends and disruption risks",
+    "cyclicality": "prose on cyclicality and macro sensitivities"
+  },
+  "section3": {
+    "ceoName": "current CEO name",
+    "ceoProfile": "tenure, background and track record (prose)",
+    "executiveTeam": "prose on key executives",
+    "boardQuality": "prose on board independence and quality",
+    "capitalAllocation": "prose on dividends, buybacks, M&A history",
+    "insiderOwnership": "prose on insider ownership and alignment",
+    "controversies": "prose on recent controversies / governance red flags, or 'None material'",
+    "esgScore": "ESG rating if available (e.g. MSCI AA, Sustainalytics 12.3) or 'n/a'",
+    "alignmentScore": <integer 1-10>,
+    "governanceFlags": [ { "label": "short flag", "level": "green | amber | red" } ]
+  },
+  "section4": {
+    "years": ["FY-4","FY-3","FY-2","FY-1","FY0 (use real fiscal year labels, oldest to newest)"],
+    "rows": [
+      { "metric": "Revenue", "values": ["v1","v2","v3","v4","v5"], "trend": "up|down|flat" },
+      { "metric": "Revenue YoY %", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "Gross Profit", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "Gross Margin %", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "EBITDA", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "EBITDA Margin %", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "EBIT", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "EBIT Margin %", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "Net Income", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "Net Margin %", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "Free Cash Flow", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "EPS (diluted)", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "Net Debt / (Net Cash)", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "ROE %", "values": ["..."], "trend": "up|down|flat" },
+      { "metric": "ROIC %", "values": ["..."], "trend": "up|down|flat" }
+    ],
+    "commentary": "1-2 paragraph narrative on the key financial trends"
+  },
+  "section5": {
+    "years": ["Y+1","Y+2","Y+3 (use real forward fiscal year labels)"],
+    "rows": [
+      { "metric": "Revenue", "values": ["e1","e2","e3"] },
+      { "metric": "Revenue Growth %", "values": ["..."] },
+      { "metric": "EBITDA", "values": ["..."] },
+      { "metric": "EBITDA Margin %", "values": ["..."] },
+      { "metric": "EPS (diluted)", "values": ["..."] },
+      { "metric": "Free Cash Flow", "values": ["..."] }
+    ],
+    "assumptions": "prose explaining growth & margin assumptions behind the projections",
+    "upside": "upside scenario in one sentence",
+    "downside": "downside scenario in one sentence"
+  },
+  "section6": {
+    "peers": [
+      { "name": "Peer Co", "evEbitda": "x.x", "pe": "x.x", "evSales": "x.x", "pFcf": "x.x" }
+    ],
+    "medians": { "evEbitda": "x.x", "pe": "x.x", "evSales": "x.x", "pFcf": "x.x" },
+    "subjectMultiples": { "evEbitda": "x.x", "pe": "x.x", "evSales": "x.x", "pFcf": "x.x" },
+    "impliedValueLow": "implied price low",
+    "impliedValueHigh": "implied price high",
+    "currentPrice": "current price",
+    "premiumDiscountPct": "<signed number, % premium(+)/discount(-) of current price vs peer-implied midpoint>",
+    "rationale": "one sentence on why it deserves a premium/discount vs peers"
+  },
+  "section7": {
+    "bullCase": ["3-5 bullet strings"],
+    "bearCase": ["3-5 bullet strings"],
+    "verdict": "BULLISH | NEUTRAL | BEARISH",
+    "confidence": "High | Medium | Low",
+    "synthesis": "one paragraph synthesizing the conclusion"
+  }
+}
+
+Return ONLY the JSON object.`;
+    }
+
+    /* ============================ API ============================ */
+    async function runAnalysis(company, apiKey) {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 8000,
+          system: SYSTEM_PROMPT,
+          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+          messages: [{ role: 'user', content: buildUserPrompt(company) }],
+        }),
+      });
+
+      if (!res.ok) {
+        let detail = '';
+        try { const e = await res.json(); detail = e.error?.message || JSON.stringify(e); }
+        catch (_) { detail = await res.text(); }
+        throw new Error(`API error ${res.status}: ${detail}`);
+      }
+
+      const data = await res.json();
+      const text = (data.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+
+      return parseJsonReport(text);
+    }
+
+    function parseJsonReport(text) {
+      if (!text) throw new Error('Empty response from model.');
+      let cleaned = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start === -1 || end === -1) throw new Error('Could not locate JSON in the model response.');
+      const slice = cleaned.slice(start, end + 1);
+      try {
+        return JSON.parse(slice);
+      } catch (e) {
+        throw new Error('Failed to parse the analysis JSON. The model returned malformed output.');
+      }
+    }
+
+    /* ============================ UI PRIMITIVES ============================ */
+    function Card({ index, eyebrow, title, accent, children }) {
+      return (
+        <section className="fade-up bg-panel border border-edge rounded-2xl overflow-hidden shadow-2xl shadow-black/40"
+                 style={{ animationDelay: `${index * 0.06}s` }}>
+          <header className="flex items-center gap-4 px-6 py-4 border-b border-edge bg-gradient-to-r from-panel2 to-panel">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl text-sm font-bold font-mono"
+                 style={{ background: accent + '22', color: accent, border: '1px solid ' + accent + '55' }}>
+              {String(index).padStart(2, '0')}
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500 font-semibold">{eyebrow}</div>
+              <h2 className="text-lg font-bold text-slate-100">{title}</h2>
+            </div>
+          </header>
+          <div className="p-6 space-y-5">{children}</div>
+        </section>
+      );
+    }
+
+    function Field({ label, children }) {
+      if (!children) return null;
+      return (
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-accent/80 font-semibold mb-1">{label}</div>
+          <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">{children}</div>
+        </div>
+      );
+    }
+
+    function Prose({ children }) {
+      if (!children) return null;
+      return <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">{children}</p>;
+    }
+
+    function MoatBadge({ strength }) {
+      const map = {
+        Wide: { bg: '#052e1666', bd: '#22c55e', fg: '#4ade80', label: 'WIDE MOAT' },
+        Narrow: { bg: '#42200566', bd: '#f59e0b', fg: '#fbbf24', label: 'NARROW MOAT' },
+        None: { bg: '#45050566', bd: '#ef4444', fg: '#f87171', label: 'NO MOAT' },
+      };
+      const s = map[strength] || map.None;
+      return (
+        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold tracking-wide text-sm"
+             style={{ background: s.bg, border: '1px solid ' + s.bd, color: s.fg }}>
+          <span className="w-2.5 h-2.5 rounded-full" style={{ background: s.fg }}></span>
+          {s.label}
+        </div>
+      );
+    }
+
+    const LEVEL_COLORS = {
+      Low: { fg: '#4ade80', bg: '#052e1655', bd: '#22c55e55' },
+      Medium: { fg: '#fbbf24', bg: '#42200555', bd: '#f59e0b55' },
+      High: { fg: '#f87171', bg: '#45050555', bd: '#ef444455' },
+    };
+
+    function ForceCell({ name, force }) {
+      const lvl = LEVEL_COLORS[force?.rating] || LEVEL_COLORS.Medium;
+      return (
+        <div className="rounded-xl p-3 border" style={{ background: lvl.bg, borderColor: lvl.bd }}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] uppercase tracking-wide text-slate-400 font-semibold">{name}</span>
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ color: lvl.fg, background: '#0008' }}>
+              {force?.rating || 'n/a'}
+            </span>
+          </div>
+          <p className="text-xs text-slate-400 leading-snug">{force?.note}</p>
+        </div>
+      );
+    }
+
+    function flagColor(level) {
+      return ({ green: '#22c55e', amber: '#f59e0b', red: '#ef4444' }[level]) || '#64748b';
+    }
+
+    function FinancialTable({ years, rows, conditional }) {
+      if (!years || !rows) return null;
+      const trendColor = (t) => (t === 'up' ? 'text-emerald-400' : t === 'down' ? 'text-rose-400' : 'text-slate-300');
+      const trendArrow = (t) => (t === 'up' ? '▲' : t === 'down' ? '▼' : '');
+      return (
+        <div className="overflow-x-auto rounded-xl border border-edge">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="bg-panel2">
+                <th className="text-left px-4 py-3 text-[11px] uppercase tracking-wider text-slate-500 font-semibold sticky left-0 bg-panel2">Metric</th>
+                {years.map((y, i) => (
+                  <th key={i} className="text-right px-4 py-3 text-xs font-mono font-semibold text-slate-300 whitespace-nowrap">{y}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri} className="border-t border-edge/60 hover:bg-white/5">
+                  <td className="px-4 py-2.5 text-slate-400 font-medium sticky left-0 bg-panel whitespace-nowrap">{r.metric}</td>
+                  {(r.values || []).map((v, vi) => (
+                    <td key={vi}
+                        className={`px-4 py-2.5 text-right font-mono whitespace-nowrap ${conditional ? trendColor(r.trend) : 'text-slate-200'}`}>
+                      {conditional && vi === (r.values.length - 1) && trendArrow(r.trend) ? (
+                        <span className="mr-1 text-[10px]">{trendArrow(r.trend)}</span>
+                      ) : null}
+                      {v}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    /* ============================ SECTION RENDERERS ============================ */
+    function Section1({ d }) {
+      if (!d) return null;
+      return (
+        <Card index={1} eyebrow="Business Model" title="Business Model & Moat" accent="#38bdf8">
+          <div className="flex flex-wrap items-center gap-3">
+            <MoatBadge strength={d.moatStrength} />
+            {(d.moatTypes || []).map((t, i) => (
+              <span key={i} className="text-xs px-3 py-1.5 rounded-lg bg-accent/10 border border-accent/30 text-accent font-medium">{t}</span>
+            ))}
+          </div>
+          <Prose>{d.businessModel}</Prose>
+          <div className="grid md:grid-cols-2 gap-5">
+            <Field label="Revenue Streams">{d.revenueStreams}</Field>
+            <Field label="Cost Structure & Margins">{d.costStructure}</Field>
+          </div>
+          <Field label="Moat Justification">{d.moatJustification}</Field>
+          <Field label="Key Value Drivers & Differentiators">{d.valueDrivers}</Field>
+        </Card>
+      );
+    }
+
+    function Section2({ d }) {
+      if (!d) return null;
+      const ff = d.fiveForces || {};
+      return (
+        <Card index={2} eyebrow="Industry" title="Industry & Competitive Dynamics" accent="#a78bfa">
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Stat label="Industry" value={d.industry} />
+            <Stat label="TAM" value={d.tam} />
+            <Stat label="Growth Rate" value={d.growthRate} />
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-violet-300/80 font-semibold mb-2">Porter's Five Forces</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <ForceCell name="Threat of Entry" force={ff.threatOfEntry} />
+              <ForceCell name="Supplier Power" force={ff.supplierPower} />
+              <ForceCell name="Buyer Power" force={ff.buyerPower} />
+              <ForceCell name="Substitutes" force={ff.substitutes} />
+              <ForceCell name="Rivalry" force={ff.rivalry} />
+            </div>
+          </div>
+          <Field label="Market Share Positioning">{d.marketShare}</Field>
+          <div className="grid md:grid-cols-2 gap-5">
+            <Field label="Trends & Disruption Risks">{d.trends}</Field>
+            <Field label="Cyclicality & Macro Sensitivity">{d.cyclicality}</Field>
+          </div>
+        </Card>
+      );
+    }
+
+    function Stat({ label, value }) {
+      return (
+        <div className="rounded-xl bg-panel2 border border-edge px-4 py-3">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">{label}</div>
+          <div className="text-sm text-slate-200 font-semibold mt-0.5">{value || 'n/a'}</div>
+        </div>
+      );
+    }
+
+    function Section3({ d }) {
+      if (!d) return null;
+      const score = Number(d.alignmentScore) || 0;
+      const scoreColor = score >= 7 ? '#22c55e' : score >= 4 ? '#f59e0b' : '#ef4444';
+      return (
+        <Card index={3} eyebrow="Stewardship" title="Management & Governance" accent="#34d399">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-3 rounded-xl bg-panel2 border border-edge px-5 py-3">
+              <div className="text-3xl font-bold font-mono" style={{ color: scoreColor }}>{score}<span className="text-base text-slate-500">/10</span></div>
+              <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold leading-tight">Alignment<br/>Score</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(d.governanceFlags || []).map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium"
+                      style={{ background: flagColor(f.level) + '1a', border: '1px solid ' + flagColor(f.level) + '55', color: flagColor(f.level) }}>
+                  <span className="w-2 h-2 rounded-full" style={{ background: flagColor(f.level) }}></span>
+                  {f.label}
+                </span>
+              ))}
+            </div>
+            {d.esgScore && d.esgScore !== 'n/a' && (
+              <span className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-medium">ESG: {d.esgScore}</span>
+            )}
+          </div>
+          <Field label={`CEO — ${d.ceoName || ''}`}>{d.ceoProfile}</Field>
+          <div className="grid md:grid-cols-2 gap-5">
+            <Field label="Executive Team">{d.executiveTeam}</Field>
+            <Field label="Board Quality & Independence">{d.boardQuality}</Field>
+            <Field label="Capital Allocation">{d.capitalAllocation}</Field>
+            <Field label="Insider Ownership & Alignment">{d.insiderOwnership}</Field>
+          </div>
+          <Field label="Controversies & Red Flags">{d.controversies}</Field>
+        </Card>
+      );
+    }
+
+    function Section4({ d }) {
+      if (!d) return null;
+      return (
+        <Card index={4} eyebrow="Track Record" title="Historical Financials — 5 Years" accent="#38bdf8">
+          <FinancialTable years={d.years} rows={d.rows} conditional />
+          <Field label="Narrative Commentary">{d.commentary}</Field>
+        </Card>
+      );
+    }
+
+    function Section5({ d }) {
+      if (!d) return null;
+      return (
+        <Card index={5} eyebrow="Forward View" title="Financial Forecasts — Next 3 Years" accent="#f5b942">
+          <FinancialTable years={d.years} rows={d.rows} />
+          <Field label="Key Assumptions">{d.assumptions}</Field>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
+              <div className="text-[11px] uppercase tracking-wider text-emerald-400 font-semibold mb-1">▲ Upside Scenario</div>
+              <p className="text-sm text-slate-300">{d.upside}</p>
+            </div>
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4">
+              <div className="text-[11px] uppercase tracking-wider text-rose-400 font-semibold mb-1">▼ Downside Scenario</div>
+              <p className="text-sm text-slate-300">{d.downside}</p>
+            </div>
+          </div>
+        </Card>
+      );
+    }
+
+    function Section6({ d }) {
+      if (!d) return null;
+      const pd = parseFloat(d.premiumDiscountPct);
+      const isPremium = pd >= 0;
+      const cols = [
+        ['EV/EBITDA', 'evEbitda'],
+        ['P/E', 'pe'],
+        ['EV/Sales', 'evSales'],
+        ['P/FCF', 'pFcf'],
+      ];
+      return (
+        <Card index={6} eyebrow="Relative Value" title="Valuation by Comparables" accent="#a78bfa">
+          <div className="overflow-x-auto rounded-xl border border-edge">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-panel2">
+                  <th className="text-left px-4 py-3 text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Company</th>
+                  {cols.map(([h]) => (
+                    <th key={h} className="text-right px-4 py-3 text-[11px] uppercase tracking-wider text-slate-500 font-semibold">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(d.peers || []).map((p, i) => (
+                  <tr key={i} className="border-t border-edge/60 hover:bg-white/5">
+                    <td className="px-4 py-2.5 text-slate-300">{p.name}</td>
+                    {cols.map(([, k]) => (
+                      <td key={k} className="px-4 py-2.5 text-right font-mono text-slate-200">{p[k]}</td>
+                    ))}
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-violet-500/40 bg-violet-500/5">
+                  <td className="px-4 py-2.5 font-semibold text-violet-300">Peer Median</td>
+                  {cols.map(([, k]) => (
+                    <td key={k} className="px-4 py-2.5 text-right font-mono font-semibold text-violet-300">{d.medians?.[k]}</td>
+                  ))}
+                </tr>
+                <tr className="border-t border-edge bg-accent/5">
+                  <td className="px-4 py-2.5 font-semibold text-accent">Subject Company</td>
+                  {cols.map(([, k]) => (
+                    <td key={k} className="px-4 py-2.5 text-right font-mono font-semibold text-accent">{d.subjectMultiples?.[k]}</td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="rounded-xl bg-panel2 border border-edge p-5">
+              <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Implied Valuation Range</div>
+              <div className="text-2xl font-bold font-mono text-slate-100">{d.impliedValueLow} <span className="text-slate-500 text-lg">—</span> {d.impliedValueHigh}</div>
+              <div className="text-sm text-slate-400 mt-2">Current price: <span className="font-mono text-slate-200">{d.currentPrice}</span></div>
+            </div>
+            <div className="rounded-xl p-5 flex flex-col justify-center border"
+                 style={{ background: (isPremium ? '#ef4444' : '#22c55e') + '12', borderColor: (isPremium ? '#ef4444' : '#22c55e') + '55' }}>
+              <div className="text-[11px] uppercase tracking-wider font-semibold mb-1" style={{ color: isPremium ? '#f87171' : '#4ade80' }}>
+                Relative to Peers
+              </div>
+              <div className="text-2xl font-bold" style={{ color: isPremium ? '#f87171' : '#4ade80' }}>
+                Trading at {Math.abs(pd || 0).toFixed(1)}% {isPremium ? 'premium' : 'discount'}
+              </div>
+            </div>
+          </div>
+          <Field label="Premium / Discount Rationale">{d.rationale}</Field>
+        </Card>
+      );
+    }
+
+    function Section7({ d }) {
+      if (!d) return null;
+      const vmap = {
+        BULLISH: { bg: '#052e16', bd: '#22c55e', fg: '#4ade80' },
+        NEUTRAL: { bg: '#422005', bd: '#f59e0b', fg: '#fbbf24' },
+        BEARISH: { bg: '#450505', bd: '#ef4444', fg: '#f87171' },
+      };
+      const v = vmap[d.verdict] || vmap.NEUTRAL;
+      return (
+        <Card index={7} eyebrow="Conclusion" title="Investment Thesis — Bull vs. Bear" accent="#f5b942">
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-5">
+              <div className="text-sm font-bold text-emerald-400 uppercase tracking-wide mb-3 flex items-center gap-2">
+                <span className="text-lg">▲</span> Bull Case
+              </div>
+              <ul className="space-y-2.5">
+                {(d.bullCase || []).map((b, i) => (
+                  <li key={i} className="text-sm text-slate-300 flex gap-2 leading-relaxed">
+                    <span className="text-emerald-500 mt-0.5">+</span><span>{b}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="rounded-xl border border-rose-500/40 bg-rose-500/5 p-5">
+              <div className="text-sm font-bold text-rose-400 uppercase tracking-wide mb-3 flex items-center gap-2">
+                <span className="text-lg">▼</span> Bear Case
+              </div>
+              <ul className="space-y-2.5">
+                {(d.bearCase || []).map((b, i) => (
+                  <li key={i} className="text-sm text-slate-300 flex gap-2 leading-relaxed">
+                    <span className="text-rose-500 mt-0.5">−</span><span>{b}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <div className="rounded-2xl p-6 text-center border-2" style={{ background: v.bg + 'aa', borderColor: v.bd }}>
+            <div className="text-[11px] uppercase tracking-[0.3em] text-slate-400 font-semibold mb-2">Final Verdict</div>
+            <div className="text-4xl font-black tracking-tight mb-1" style={{ color: v.fg }}>{d.verdict}</div>
+            <div className="text-sm text-slate-400 mb-4">Confidence: <span className="font-semibold" style={{ color: v.fg }}>{d.confidence}</span></div>
+            <p className="text-sm text-slate-300 leading-relaxed max-w-3xl mx-auto">{d.synthesis}</p>
+          </div>
+        </Card>
+      );
+    }
+
+    /* ============================ LOADING ============================ */
+    function LoadingPanel() {
+      const [idx, setIdx] = useState(0);
+      useEffect(() => {
+        const t = setInterval(() => setIdx((i) => (i + 1) % STATUS_MESSAGES.length), 2200);
+        return () => clearInterval(t);
+      }, []);
+      return (
+        <div className="fade-up bg-panel border border-edge rounded-2xl p-12 flex flex-col items-center text-center">
+          <div className="relative w-16 h-16 mb-6">
+            <div className="absolute inset-0 rounded-full border-4 border-edge"></div>
+            <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-accent border-r-gold spinner"></div>
+          </div>
+          <div className="text-lg font-semibold text-slate-200 mb-2">{STATUS_MESSAGES[idx]}</div>
+          <div className="flex items-center gap-1.5 text-slate-500 text-sm">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent pulse-dot" style={{ animationDelay: '0s' }}></span>
+            <span className="w-1.5 h-1.5 rounded-full bg-accent pulse-dot" style={{ animationDelay: '0.2s' }}></span>
+            <span className="w-1.5 h-1.5 rounded-full bg-accent pulse-dot" style={{ animationDelay: '0.4s' }}></span>
+            <span className="ml-2">Running live web research — this can take 30–90s</span>
+          </div>
+        </div>
+      );
+    }
+
+    /* ============================ APP ============================ */
+    function App() {
+      const [apiKey, setApiKey] = useState(() => localStorage.getItem('moatscope_key') || '');
+      const [selected, setSelected] = useState('Apple');
+      const [custom, setCustom] = useState('');
+      const [loading, setLoading] = useState(false);
+      const [report, setReport] = useState(null);
+      const [error, setError] = useState('');
+      const resultRef = useRef(null);
+
+      const company = (custom.trim() || selected).trim();
+
+      useEffect(() => {
+        if (apiKey) localStorage.setItem('moatscope_key', apiKey);
+      }, [apiKey]);
+
+      const analyze = useCallback(async () => {
+        setError('');
+        if (!apiKey.trim()) { setError('Please enter your Anthropic API key to run live analysis.'); return; }
+        if (!company) { setError('Please select or type a company.'); return; }
+        setReport(null);
+        setLoading(true);
+        try {
+          const r = await runAnalysis(company, apiKey.trim());
+          setReport(r);
+          setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+        } catch (e) {
+          setError(e.message || 'Analysis failed.');
+        } finally {
+          setLoading(false);
+        }
+      }, [apiKey, company]);
+
+      return (
+        <div className="min-h-screen">
+          {/* Header */}
+          <header className="border-b border-edge bg-panel2/80 backdrop-blur sticky top-0 z-20">
+            <div className="max-w-6xl mx-auto px-5 py-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent to-gold flex items-center justify-center font-black text-ink text-lg">M</div>
+                <div>
+                  <div className="text-xl font-black tracking-tight grad-text">MoatScope</div>
+                  <div className="text-[10px] uppercase tracking-[0.25em] text-slate-500 font-semibold -mt-0.5">Equity Research Terminal</div>
+                </div>
+              </div>
+              <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
+                Powered by Claude · Live Web Search
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-6xl mx-auto px-5 py-8 space-y-6">
+            {/* Control panel */}
+            <div className="bg-panel border border-edge rounded-2xl p-6 shadow-2xl shadow-black/40">
+              <h1 className="text-2xl font-bold text-slate-100 mb-1">Deep-dive any public company</h1>
+              <p className="text-sm text-slate-400 mb-5">Business model · moat · governance · 5-yr financials · forecasts · comps · bull/bear thesis — all generated live from real web data.</p>
+
+              <div className="grid md:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Select a company</label>
+                  <select
+                    value={selected}
+                    onChange={(e) => { setSelected(e.target.value); setCustom(''); }}
+                    className="mt-1.5 w-full bg-panel2 border border-edge rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:border-accent transition">
+                    {COMPANIES.map((g) => (
+                      <optgroup key={g.group} label={g.group}>
+                        {g.items.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">…or type any company</label>
+                  <input
+                    value={custom}
+                    onChange={(e) => setCustom(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && analyze()}
+                    placeholder="e.g. Costco, Adyen, Berkshire Hathaway…"
+                    className="mt-1.5 w-full bg-panel2 border border-edge rounded-xl px-4 py-3 text-slate-200 text-sm placeholder-slate-600 focus:outline-none focus:border-accent transition" />
+                </div>
+              </div>
+
+              <div className="mb-4">
+                <label className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Anthropic API key</label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="sk-ant-…"
+                  className="mt-1.5 w-full bg-panel2 border border-edge rounded-xl px-4 py-3 text-slate-200 text-sm font-mono placeholder-slate-600 focus:outline-none focus:border-accent transition" />
+                <p className="text-[11px] text-slate-600 mt-1.5">Stored only in your browser's localStorage. The call uses the web_search tool and runs directly from your browser.</p>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  onClick={analyze}
+                  disabled={loading}
+                  className="px-7 py-3 rounded-xl font-bold text-ink bg-gradient-to-r from-accent to-gold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg shadow-accent/20">
+                  {loading ? 'Analyzing…' : `Analyze ${company || ''}`}
+                </button>
+                <span className="text-sm text-slate-500">Target: <span className="text-slate-300 font-semibold">{company || '—'}</span></span>
+              </div>
+
+              {error && (
+                <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+                  {error}
+                </div>
+              )}
+            </div>
+
+            {loading && <LoadingPanel />}
+
+            {report && (
+              <div ref={resultRef} className="space-y-6">
+                {/* Report header */}
+                <div className="fade-up bg-gradient-to-r from-panel to-panel2 border border-edge rounded-2xl p-6 flex flex-wrap items-end justify-between gap-4">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-[0.25em] text-accent font-semibold mb-1">Research Report</div>
+                    <h2 className="text-3xl font-black text-slate-100">{report.company}</h2>
+                    <div className="text-sm text-slate-400 mt-1 font-mono">
+                      {report.ticker} · {report.currency}{report.asOf ? ` · as of ${report.asOf}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex gap-3">
+                    <div className="rounded-xl bg-panel2 border border-edge px-5 py-3 text-right">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Price</div>
+                      <div className="text-lg font-bold font-mono text-slate-100">{report.currentPrice || 'n/a'}</div>
+                    </div>
+                    <div className="rounded-xl bg-panel2 border border-edge px-5 py-3 text-right">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Market Cap</div>
+                      <div className="text-lg font-bold font-mono text-slate-100">{report.marketCap || 'n/a'}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <Section1 d={report.section1} />
+                <Section2 d={report.section2} />
+                <Section3 d={report.section3} />
+                <Section4 d={report.section4} />
+                <Section5 d={report.section5} />
+                <Section6 d={report.section6} />
+                <Section7 d={report.section7} />
+
+                <div className="text-center text-[11px] text-slate-600 py-4">
+                  MoatScope generates AI-assisted research for informational purposes only. Not investment advice. Verify all figures independently before acting.
+                </div>
+              </div>
+            )}
+
+            {!loading && !report && (
+              <div className="text-center text-slate-600 text-sm py-12">
+                Select a company and click Analyze to generate a full research report.
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
