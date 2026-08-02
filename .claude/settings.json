@@ -8,6 +8,7 @@
     }
   },
   "enabledPlugins": {
-    "financial-analysis@claude-for-financial-services": true
+    "financial-analysis@claude-for-financial-services": true,
+    "earnings-reviewer@claude-for-financial-services": true
   }
 }
