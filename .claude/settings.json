@@ -6,5 +6,8 @@
         "repo": "anthropics/claude-for-financial-services"
       }
     }
+  },
+  "enabledPlugins": {
+    "financial-analysis@claude-for-financial-services": true
   }
 }
