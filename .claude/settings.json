@@ -1,0 +1,16 @@
+{
+  "extraKnownMarketplaces": {
+    "claude-for-financial-services": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-for-financial-services"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "financial-analysis@claude-for-financial-services": true,
+    "earnings-reviewer@claude-for-financial-services": true,
+    "market-researcher@claude-for-financial-services": true,
+    "model-builder@claude-for-financial-services": true
+  }
+}
